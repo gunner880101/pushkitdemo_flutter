@@ -1,113 +1,422 @@
+import 'dart:async';
+import 'dart:math';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
+import 'package:huawei_push/huawei_push_library.dart';
 
 void main() {
-  runApp(MyApp());
+  runApp(MaterialApp(home: MyApp()));
 }
 
-class MyApp extends StatelessWidget {
-  // This widget is the root of your application.
+class MyApp extends StatefulWidget {
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // Try running your application with "flutter run". You'll see the
-        // application has a blue toolbar. Then, without quitting the app, try
-        // changing the primarySwatch below to Colors.green and then invoke
-        // "hot reload" (press "r" in the console where you ran "flutter run",
-        // or simply save your changes to "hot reload" in a Flutter IDE).
-        // Notice that the counter didn't reset back to zero; the application
-        // is not restarted.
-        primarySwatch: Colors.blue,
-      ),
-      home: MyHomePage(title: 'Flutter Demo Home Page'),
-    );
+  _MyAppState createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late TextEditingController logTextController;
+  late TextEditingController topicTextController;
+
+  final padding = EdgeInsets.symmetric(vertical: 1.0, horizontal: 16);
+
+  String _token = '';
+
+  void _onTokenEvent(String event) {
+    _token = event;
+    showResult("TokenEvent", _token);
   }
-}
 
-class MyHomePage extends StatefulWidget {
-  MyHomePage({Key key, this.title}) : super(key: key);
+  void _onTokenError(Object error) {
+    PlatformException e = error as PlatformException;
+    showResult("TokenErrorEvent", e.message!);
+  }
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
+  static void backgroundMessageCallback(RemoteMessage remoteMessage) async {
+    String? data = remoteMessage.data;
+    if (data != null) {
+      print("Background message is received, sending local notification.");
+      Push.localNotification({
+        HMSLocalNotificationAttr.TITLE: '[Headless] DataMessage Received',
+        HMSLocalNotificationAttr.MESSAGE: data
+      });
+    } else {
+      print("Background message is received. There is no data in the message.");
+    }
+  }
 
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
+  void _onMessageReceived(RemoteMessage remoteMessage) {
+    String? data = remoteMessage.data;
+    if (data != null) {
+      Push.localNotification({
+        HMSLocalNotificationAttr.TITLE: 'DataMessage Received',
+        HMSLocalNotificationAttr.MESSAGE: data
+      });
+      showResult("onMessageReceived", "Data: " + data);
+    } else {
+      showResult("onMessageReceived", "No data is present.");
+    }
+  }
 
-  final String title;
+  void _onMessageReceiveError(Object error) {
+    showResult("onMessageReceiveError", error.toString());
+  }
+
+  void _onRemoteMessageSendStatus(String event) {
+    showResult("RemoteMessageSendStatus", "Status: " + event.toString());
+  }
+
+  void _onRemoteMessageSendError(Object error) {
+    PlatformException e = error as PlatformException;
+    showResult("RemoteMessageSendError", "Error: " + e.toString());
+  }
+
+  void _onNewIntent(String? intentString) {
+    // For navigating to the custom intent page (deep link) the custom
+    // intent that sent from the push kit console is:
+    // app://app2
+    intentString = intentString ?? '';
+    if (intentString != '') {
+      showResult('CustomIntentEvent: ', intentString);
+      List parsedString = intentString.split("://");
+      if (parsedString[1] == "app2") {
+        SchedulerBinding.instance?.addPostFrameCallback((timeStamp) {
+          // Navigator.of(context).push(
+          //     MaterialPageRoute(builder: (context) => CustomIntentPage()));
+        });
+      }
+    }
+  }
+
+  void _onIntentError(Object err) {
+    PlatformException e = err as PlatformException;
+    print("Error on intent stream: " + e.toString());
+  }
+
+  void _onNotificationOpenedApp(dynamic initialNotification) {
+    if (initialNotification != null) {
+      showResult("onNotificationOpenedApp", initialNotification.toString());
+      print("[onNotificationOpenedApp]" + initialNotification.toString());
+    }
+  }
 
   @override
-  _MyHomePageState createState() => _MyHomePageState();
-}
+  void initState() {
+    super.initState();
+    Push.enableLogger();
+    logTextController = new TextEditingController();
+    topicTextController = new TextEditingController();
+    Push.disableLogger();
+    initPlatformState();
+  }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  Future<void> initPlatformState() async {
+    if (!mounted) return;
+    Push.getTokenStream.listen(_onTokenEvent, onError: _onTokenError);
+    Push.getIntentStream.listen(_onNewIntent, onError: _onIntentError);
+    Push.onNotificationOpenedApp.listen(_onNotificationOpenedApp);
+    var initialNotification = await Push.getInitialNotification();
+    _onNotificationOpenedApp(initialNotification);
+    String? intent = await Push.getInitialIntent();
+    _onNewIntent(intent);
+    Push.onMessageReceivedStream
+        .listen(_onMessageReceived, onError: _onMessageReceiveError);
+    Push.getRemoteMsgSendStatusStream
+        .listen(_onRemoteMessageSendStatus, onError: _onRemoteMessageSendError);
+    bool backgroundMessageHandler =
+        await Push.registerBackgroundMessageHandler(backgroundMessageCallback);
+    print("backgroundMessageHandler registered: $backgroundMessageHandler");
+  }
 
-  void _incrementCounter() {
+  void removeBackgroundMessageHandler() async {
+    await Push.removeBackgroundMessageHandler();
+  }
+
+  @override
+  void dispose() {
+    logTextController.dispose();
+    topicTextController.dispose();
+    super.dispose();
+  }
+
+  void turnOnPush() async {
+    String result = await Push.turnOnPush();
+    showResult("turnOnPush", result);
+  }
+
+  void turnOffPush() async {
+    String result = await Push.turnOffPush();
+    showResult("turnOffPush", result);
+  }
+
+  void getId() async {
+    String? result = await Push.getId();
+    showResult("getId", result);
+  }
+
+  void getAAID() async {
+    String? result = await Push.getAAID();
+    showResult("getAAID", result);
+  }
+
+  void getAppId() async {
+    String result = await Push.getAppId();
+    showResult("getAppId", result);
+  }
+
+  void getOdid() async {
+    String? result = await Push.getOdid();
+    showResult("getOdid", result);
+  }
+
+  void getCreationTime() async {
+    String result = await Push.getCreationTime();
+    showResult("getCreationTime", result);
+  }
+
+  void deleteToken() async {
+    String result = await Push.deleteToken("");
+    showResult("deleteToken", result);
+  }
+
+  void deleteAAID() async {
+    String result = await Push.deleteAAID();
+    showResult("deleteAAID", result);
+  }
+
+  void sendRemoteMsg() async {
+    RemoteMessageBuilder remoteMsg = RemoteMessageBuilder(
+        to: '',
+        data: {"Data": "test"},
+        messageType: "my_type",
+        ttl: 120,
+        messageId: Random().nextInt(10000).toString(),
+        collapseKey: '-1',
+        sendMode: 1,
+        receiptMode: 1);
+    String result = await Push.sendRemoteMessage(remoteMsg);
+    showResult("sendRemoteMessage", result);
+  }
+
+  void subscribe() async {
+    String topic = topicTextController.text;
+    String result = await Push.subscribe(topic);
+    showResult("subscribe", result);
+  }
+
+  void unsubscribe() async {
+    String topic = topicTextController.text;
+    String result = await Push.unsubscribe(topic);
+    showResult("unsubscribe", result);
+  }
+
+  void enableAutoInit() async {
+    String result = await Push.setAutoInitEnabled(true);
+    showResult("enableAutoInit", result);
+  }
+
+  void disableAutoInit() async {
+    String result = await Push.setAutoInitEnabled(false);
+    showResult("disableAutoInit", result);
+  }
+
+  void isAutoInitEnabled() async {
+    bool result = await Push.isAutoInitEnabled();
+    showResult("isAutoInitEnabled", result.toString());
+  }
+
+  void getInitialNotification() async {
+    final dynamic initialNotification = await Push.getInitialNotification();
+    showResult("getInitialNotification", initialNotification.toString());
+  }
+
+  void getInitialIntent() async {
+    final String? initialIntent = await Push.getInitialIntent();
+    showResult("getInitialIntent", initialIntent);
+  }
+
+  void getAgConnectValues() async {
+    String result = await Push.getAgConnectValues();
+    showResult("getAgConnectValues", result);
+  }
+
+  void clearLog() {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      logTextController.text = "";
     });
   }
 
+  void showResult(String name, [String? msg = "Button pressed."]) {
+    if (msg == null) {
+      msg = "";
+    }
+    appendLog("[" + name + "]" + ": " + msg);
+    print("[" + name + "]" + ": " + msg);
+    Push.showToast("[" + name + "]: " + msg);
+  }
+
+  void appendLog([String msg = "Button pressed."]) {
+    setState(() {
+      logTextController.text = msg + "\n" + logTextController.text;
+    });
+  }
+
+  Widget expandedButton(
+    int flex,
+    Function func,
+    String txt, {
+    double fontSize = 16.0,
+    Color? color,
+  }) {
+    return Expanded(
+      flex: flex,
+      child: Padding(
+        padding: padding,
+        child: ElevatedButton(
+          onPressed: () {
+            func();
+          },
+          style: ElevatedButton.styleFrom(
+            primary: color ?? Colors.grey.shade300,
+          ),
+          child: Text(
+            txt,
+            style: TextStyle(fontSize: fontSize, color: Colors.black87),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
     return Scaffold(
       appBar: AppBar(
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+        title: const Text('🔔 HMS Push Kit Demo'),
+        centerTitle: true,
       ),
       body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Invoke "debug painting" (press "p" in the console, choose the
-          // "Toggle Debug Paint" action from the Flutter Inspector in Android
-          // Studio, or the "Toggle Debug Paint" command in Visual Studio Code)
-          // to see the wireframe for each widget.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          mainAxisAlignment: MainAxisAlignment.center,
+        child: ListView(
+          shrinkWrap: true,
           children: <Widget>[
-            Text(
-              'You have pushed the button this many times:',
+            // Row(
+            //   children: <Widget>[
+            //     expandedButton(
+            //         5,
+            //         () => Navigator.of(context).push(MaterialPageRoute(
+            //             builder: (context) => CustomIntentPage())),
+            //         "Open Custom Intent URI Page",
+            //         color: Colors.deepOrangeAccent),
+            //   ],
+            // ),
+            // Row(children: <Widget>[
+            //   expandedButton(
+            //       5,
+            //       () => Navigator.of(context).push(MaterialPageRoute(
+            //           builder: (context) => LocalNotificationPage())),
+            //       'Local Notification',
+            //       color: Colors.blue),
+            // ]),
+            // Row(children: <Widget>[
+            //   expandedButton(
+            //       5,
+            //       () => Navigator.of(context).push(MaterialPageRoute(
+            //           builder: (context) => MultiSenderPage())),
+            //       'Multi Sender Page',
+            //       color: Colors.yellow),
+            // ]),
+            Row(children: <Widget>[
+              expandedButton(5, () => turnOnPush(), 'TurnOnPush', fontSize: 20),
+              expandedButton(5, () => turnOffPush(), 'TurnOffPush',
+                  fontSize: 20)
+            ]),
+            Row(children: <Widget>[
+              expandedButton(4, () => getId(), 'GetID', fontSize: 14),
+              expandedButton(4, () => getAAID(), 'GetAAID', fontSize: 14),
+              expandedButton(4, () => getOdid(), 'GetODID', fontSize: 14),
+            ]),
+            Row(children: <Widget>[
+              expandedButton(5, () => Push.getToken(""), 'GetToken',
+                  fontSize: 20),
+              expandedButton(5, () => getCreationTime(), 'GetCreationTime',
+                  fontSize: 20)
+            ]),
+            Row(children: <Widget>[
+              expandedButton(5, () => deleteToken(), 'DeleteToken',
+                  fontSize: 20),
+              expandedButton(5, () => deleteAAID(), 'DeleteAAID', fontSize: 20)
+            ]),
+            Padding(
+              padding: padding,
+              child: TextField(
+                controller: topicTextController,
+                textAlign: TextAlign.center,
+                decoration: new InputDecoration(
+                  focusedBorder: OutlineInputBorder(
+                    borderSide:
+                        BorderSide(color: Colors.blueAccent, width: 3.0),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: Colors.blueGrey, width: 3.0),
+                  ),
+                  hintText: 'Topic Name',
+                ),
+              ),
             ),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headline4,
+            Row(children: <Widget>[
+              expandedButton(5, () => subscribe(), 'Subscribe', fontSize: 20),
+              expandedButton(5, () => unsubscribe(), 'UnSubscribe',
+                  fontSize: 20),
+            ]),
+            Row(children: <Widget>[
+              expandedButton(5, () => disableAutoInit(), 'Disable AutoInit',
+                  fontSize: 20),
+              expandedButton(5, () => enableAutoInit(), 'Enable AutoInit',
+                  fontSize: 20)
+            ]),
+            Row(children: <Widget>[
+              expandedButton(5, () => isAutoInitEnabled(), 'IsAutoInitEnabled',
+                  fontSize: 20),
+              expandedButton(5, () => sendRemoteMsg(), 'sendRemoteMessage',
+                  fontSize: 20)
+            ]),
+            Row(children: <Widget>[
+              expandedButton(
+                  6, () => getInitialNotification(), 'getInitialNotification',
+                  fontSize: 16),
+              expandedButton(6, () => getInitialIntent(), 'getInitialIntent',
+                  fontSize: 16)
+            ]),
+            Row(children: [
+              expandedButton(5, () => clearLog(), 'Clear Log', fontSize: 20)
+            ]),
+            Row(children: [
+              expandedButton(
+                  5, () => getAgConnectValues(), 'Get agconnect values',
+                  fontSize: 20)
+            ]),
+            Padding(
+              padding: padding,
+              child: TextField(
+                controller: logTextController,
+                keyboardType: TextInputType.multiline,
+                maxLines: 15,
+                readOnly: true,
+                decoration: new InputDecoration(
+                  focusedBorder: OutlineInputBorder(
+                    borderSide:
+                        BorderSide(color: Colors.blueAccent, width: 3.0),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderSide: BorderSide(color: Colors.blueGrey, width: 3.0),
+                  ),
+                ),
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
     );
   }
 }
